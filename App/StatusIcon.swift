@@ -6,7 +6,7 @@ import AppKit
 ///                 leaf / flame: low / high power while on battery)
 /// The plain state is a template image so macOS tints it for light and dark menu bars.
 enum StatusIcon {
-    static func make(percent: Int, charging: Bool, pluggedIn: Bool, mode: Int) -> NSImage {
+    static func make(percent: Int, charging: Bool, pluggedIn: Bool, mode: Int, showPercent: Bool = true) -> NSImage {
         let pct = max(0, min(100, percent))
         let lowBattery = pct <= 10 && !pluggedIn
         let fillColor: NSColor? = mode == 1 ? .systemYellow : (mode == 2 ? .systemOrange : (lowBattery ? .systemRed : nil))
@@ -22,16 +22,19 @@ enum StatusIcon {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let h: CGFloat = 18
         let bodyW: CGFloat = 27, bodyH: CGFloat = 12.5, capW: CGFloat = 2, capH: CGFloat = 4.5
-        let textSize = text.size(withAttributes: [.font: font])
-        let width = ceil(textSize.width + 4 + bodyW + capW + 1)
+        let textSize = showPercent ? text.size(withAttributes: [.font: font]) : .zero
+        let gapW: CGFloat = showPercent ? 4 : 0
+        let width = ceil(textSize.width + gapW + bodyW + capW + 1)
 
         let img = NSImage(size: NSSize(width: width, height: h), flipped: false) { _ in
             let ink = template ? NSColor.black : NSColor.labelColor
             var x: CGFloat = 0
 
-            text.draw(at: NSPoint(x: x, y: (h - textSize.height) / 2),
-                      withAttributes: [.font: font, .foregroundColor: ink])
-            x += textSize.width + 4
+            if showPercent {
+                text.draw(at: NSPoint(x: x, y: (h - textSize.height) / 2),
+                          withAttributes: [.font: font, .foregroundColor: ink])
+            }
+            x += textSize.width + gapW
 
             // Outline and cap, dimmed like the system icon.
             let body = NSRect(x: x + 0.5, y: (h - bodyH) / 2, width: bodyW - 1, height: bodyH)

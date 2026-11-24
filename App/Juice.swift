@@ -31,6 +31,19 @@ final class Power: ObservableObject {
     @Published var error: String?
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
 
+    // Preferences and automation state, kept across launches.
+    @Published var topUpRestore = UserDefaults.standard.integer(forKey: "topUpRestore") {   // limit to return to after a one-off full charge; 0 = none
+        didSet { UserDefaults.standard.set(topUpRestore, forKey: "topUpRestore") }
+    }
+    @Published var autoLowPower = UserDefaults.standard.bool(forKey: "autoLowPower") {
+        didSet { UserDefaults.standard.set(autoLowPower, forKey: "autoLowPower") }
+    }
+    @Published var showPercent = UserDefaults.standard.object(forKey: "showPercent") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showPercent, forKey: "showPercent") }
+    }
+    private var modeBeforeAutoLow: Int?
+    private var autoLowDismissed = false
+
     private let energy = EnergySampler()
     private let cpuSampler = CPUSampler()
     private var timer: Timer?
@@ -47,8 +60,46 @@ final class Power: ObservableObject {
 
     private func tick() {
         refresh()
+        automation()
         ticks += 1
         if ticks % 10 == 0 { readMode(); readLimit() }
+    }
+
+    private func automation() {
+        guard helperInstalled else { return }
+        // One-off full charge: put the limit back once it's full or unplugged.
+        if topUpRestore > 0, percent >= 100 || !onAC {
+            let back = topUpRestore
+            topUpRestore = 0
+            setLimit(back)
+        }
+        // Low Power Mode below 20% on battery; previous mode returns when plugged in.
+        if onAC {
+            autoLowDismissed = false
+            if let prev = modeBeforeAutoLow { modeBeforeAutoLow = nil; applyMode(prev) }
+        } else if autoLowPower, percent <= 20, mode != 1, modeBeforeAutoLow == nil, !autoLowDismissed {
+            modeBeforeAutoLow = mode
+            applyMode(1)
+        }
+    }
+
+    func topUp() {
+        guard limit < 100, onAC else { return }
+        topUpRestore = limit
+        setLimit(100)
+        if limit != 100 { topUpRestore = 0 }
+    }
+
+    func cancelTopUp() {
+        let back = topUpRestore
+        topUpRestore = 0
+        if back > 0 { setLimit(back) }
+    }
+
+    /// A limit picked by hand always ends a one-off full charge.
+    func chooseLimit(_ v: Int) {
+        topUpRestore = 0
+        setLimit(v)
     }
 
     func refresh() {
@@ -183,7 +234,14 @@ final class Power: ObservableObject {
         helperInstalled = FileManager.default.fileExists(atPath: helperPath)
     }
 
+    /// A mode picked by hand. Overrides the automatic low-power switch until the next time it's plugged in.
     func setMode(_ m: Int) {
+        if modeBeforeAutoLow != nil || (!onAC && percent <= 20) { autoLowDismissed = true }
+        modeBeforeAutoLow = nil
+        applyMode(m)
+    }
+
+    private func applyMode(_ m: Int) {
         guard m != mode else { return }
         let prev = mode
         mode = m
@@ -209,6 +267,16 @@ final class Power: ObservableObject {
         if let err, (err[NSAppleScript.errorNumber] as? Int) != -128 {
             error = "Install failed: \(err[NSAppleScript.errorMessage] ?? "unknown")"
         } else { error = nil }
+        readLimit(); readMode()
+    }
+
+    func uninstallHelper() {
+        guard let res = Bundle.main.resourcePath else { return }
+        let cmd = "/bin/sh \(quoted("\(res)/uninstall-helper.sh"))"
+        let apple = "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+        var err: NSDictionary?
+        NSAppleScript(source: apple)?.executeAndReturnError(&err)
+        topUpRestore = 0
         readLimit(); readMode()
     }
 
@@ -268,7 +336,7 @@ final class Power: ObservableObject {
     }
 
     var statusImage: NSImage {
-        StatusIcon.make(percent: percent, charging: charging, pluggedIn: onAC, mode: mode)
+        StatusIcon.make(percent: percent, charging: charging, pluggedIn: onAC, mode: mode, showPercent: showPercent)
     }
 }
 
@@ -724,7 +792,7 @@ struct PanelContent: View {
     }
 
     private var limitCard: some View {
-        let on = p.limit < 100
+        let on = p.limit < 100 || p.topUpRestore > 0
         return Card {
             VStack(spacing: 10) {
                 HStack {
@@ -734,18 +802,27 @@ struct PanelContent: View {
                         .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
                         .foregroundStyle(on || dragging ? Color.primary : Color.secondary)
                         .contentTransition(.numericText())
-                    Toggle("", isOn: Binding(get: { on }, set: { p.setLimit($0 ? Int(min(sliderLimit, 99)) : 100) }))
+                    Toggle("", isOn: Binding(get: { on }, set: { p.chooseLimit($0 ? Int(min(sliderLimit, 99)) : 100) }))
                         .toggleStyle(.switch).labelsHidden().controlSize(.mini)
                 }
                 LimitSlider(value: $sliderLimit, range: 40...100, active: on || dragging) {
                     dragging = false
-                    p.setLimit(Int(sliderLimit))
+                    p.chooseLimit(Int(sliderLimit))
                 }
                 .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in dragging = true })
-                Text(on ? "Stops charging at \(p.limit)%, starts again at \(p.limit - 3)%."
-                        : "No limit. The battery charges to 100%.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .center, spacing: 8) {
+                    Text(p.topUpRestore > 0 ? "Charging to 100% once, then back to \(p.topUpRestore)%."
+                         : on ? "Stops charging at \(p.limit)%, starts again at \(p.limit - 3)%."
+                         : "No limit. The battery charges to 100%.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if p.topUpRestore > 0 {
+                        Button("Cancel") { p.cancelTopUp() }.buttonStyle(.bordered).controlSize(.mini)
+                    } else if on, p.onAC {
+                        Button("Charge to Full Once") { p.topUp() }.buttonStyle(.bordered).controlSize(.mini)
+                    }
+                }
             }
         }
         .disabled(!p.helperInstalled)
@@ -922,8 +999,11 @@ struct PanelContent: View {
     private var footer: some View {
         VStack(spacing: 1) {
             Divider().padding(.bottom, 4)
+            MenuRow(title: "Show Percentage in Menu Bar", checked: p.showPercent) { p.showPercent.toggle() }
+            MenuRow(title: "Low Power Mode Below 20%", checked: p.autoLowPower) { p.autoLowPower.toggle() }
             MenuRow(title: "Open at Login", checked: p.launchAtLogin) { p.toggleLaunchAtLogin() }
             if p.error != nil || !p.helperInstalled { MenuRow(title: "Reinstall Helper…", checked: false) { p.installHelper() } }
+            if p.helperInstalled && NSEvent.modifierFlags.contains(.option) { MenuRow(title: "Uninstall Helper…", checked: false) { p.uninstallHelper() } }
             MenuRow(title: "Quit Juice", checked: false, shortcut: "⌘Q") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         }

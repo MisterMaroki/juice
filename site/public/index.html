@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Juice — battery, power modes and energy flow in your Mac's menu bar</title>
+<meta name="description" content="A small menu bar app for MacBooks: switch Low, Automatic and High Power in one click, cap charging at any percentage, and see live where every watt goes.">
+<meta property="og:title" content="Juice — your Mac's power, in the menu bar">
+<meta property="og:description" content="One-click power modes, a charge limit, and a live energy flow chart. Free.">
+<meta property="og:url" content="https://juice.1273.co.uk/">
+<link rel="icon" href="/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Geist+Mono&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --white: #FAFAFA; --gray-100: #F5F5F5; --gray-200: #E5E5E5; --gray-300: #D4D4D4; --gray-400: #A3A3A3;
+    --gray-500: #737373; --gray-600: #525252; --gray-800: #262626; --gray-900: #171717; --black: #0A0A0A;
+    --serif: "Instrument Serif", Georgia, serif;
+    --sans: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  ::selection { background: var(--black); color: var(--white); }
+  html { -webkit-text-size-adjust: 100%; }
+  body { background: var(--white); color: var(--black); font: 16px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
+  img { display: block; max-width: 100%; height: auto; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 40px; }
+  .label { font: 11px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray-500); }
+
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; max-width: 1200px; margin: 0 auto; }
+  nav .mark { display: flex; align-items: center; gap: 10px; font: 13px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; text-decoration: none; }
+  nav .mark img { width: 26px; height: 26px; }
+  nav .by { font: 13px/1 var(--mono); letter-spacing: 0.025em; color: var(--gray-500); text-decoration: none; }
+  nav .by:hover { color: var(--black); }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: 80px; align-items: start; padding-top: 72px; padding-bottom: 120px; }
+  h1 { font: italic 400 clamp(44px, 6vw, 72px)/1.05 var(--serif); letter-spacing: -0.02em; margin: 20px 0 24px; text-wrap: balance; }
+  .lede { font-size: 17px; line-height: 1.625; color: var(--gray-600); max-width: 34em; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 36px; }
+  .btn { display: inline-block; background: var(--black); color: var(--white); border: 1px solid var(--black); font-size: 14px; font-weight: 500; letter-spacing: 0.025em; padding: 14px 28px; text-decoration: none; }
+  .btn:hover { background: var(--gray-800); }
+  .btn:focus-visible, a:focus-visible { outline: 2px solid var(--black); outline-offset: 3px; }
+  .meta { font: 12px/1.6 var(--mono); letter-spacing: 0.025em; color: var(--gray-500); }
+  .bar { margin-top: 56px; border: 1px solid var(--gray-200); }
+  .bar img { width: 100%; }
+  .bar figcaption, .shot figcaption { padding: 12px 16px; border-top: 1px solid var(--gray-200); }
+  .shot { background: var(--gray-900); border: 1px solid var(--gray-900); justify-self: end; width: min(100%, 372px); }
+  .shot figcaption { border-top-color: var(--gray-800); color: var(--gray-400); }
+
+  section { border-top: 1px solid var(--gray-200); padding: 120px 0; }
+  h2 { font: italic 400 clamp(32px, 5vw, 48px)/1.15 var(--serif); letter-spacing: -0.02em; margin: 16px 0 48px; max-width: 16em; text-wrap: balance; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--gray-200); border: 1px solid var(--gray-200); }
+  .card { background: var(--white); padding: 32px 28px; }
+  .card h3 { font: 400 20px/1.25 var(--serif); margin-bottom: 10px; }
+  .card p { font-size: 14px; line-height: 1.625; color: var(--gray-600); }
+
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 80px; align-items: center; }
+  .split .shot { justify-self: start; }
+  dl { display: grid; gap: 1px; background: var(--gray-200); border: 1px solid var(--gray-200); }
+  dl div { background: var(--white); padding: 18px 20px; display: grid; grid-template-columns: 9.5em 1fr; gap: 16px; align-items: baseline; }
+  dt { font: 11px/1.4 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray-500); }
+  dd { font-size: 14px; line-height: 1.625; color: var(--gray-600); }
+
+  ol.steps { list-style: none; padding: 0; counter-reset: s; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--gray-200); border: 1px solid var(--gray-200); }
+  ol.steps li { background: var(--white); padding: 32px 28px; counter-increment: s; font-size: 14px; line-height: 1.625; color: var(--gray-600); }
+  ol.steps li::before { content: "0" counter(s); display: block; font: 11px/1 var(--mono); letter-spacing: 0.1em; color: var(--gray-400); margin-bottom: 14px; }
+  ol.steps strong { color: var(--black); font-weight: 600; }
+  .fine { margin-top: 32px; font-size: 14px; line-height: 1.625; color: var(--gray-500); max-width: 60em; }
+
+  footer { border-top: 1px solid var(--gray-200); padding: 32px 0; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font: 13px/1.6 var(--mono); letter-spacing: 0.025em; color: var(--gray-500); }
+
+  @media (max-width: 900px) {
+    .wrap, nav { padding-left: 24px; padding-right: 24px; }
+    .hero, .split { grid-template-columns: 1fr; gap: 48px; }
+    .hero { padding-top: 40px; padding-bottom: 80px; }
+    .shot, .split .shot { justify-self: center; }
+    section { padding: 80px 0; }
+    .grid, ol.steps { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 480px) {
+    .wrap, nav { padding-left: 20px; padding-right: 20px; }
+    section { padding: 64px 0; }
+    dl div { grid-template-columns: 1fr; gap: 4px; }
+  }
+</style>
+</head>
+<body>
+<nav>
+  <a class="mark" href="/"><img src="/icon.png" alt="" width="26" height="26">Juice</a>
+  <a class="by" href="https://1273.co.uk/apps">by 1273</a>
+</nav>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <p class="label">macOS menu bar app · Free</p>
+      <h1>Your Mac's power, in the menu bar.</h1>
+      <p class="lede">Switch between Low, Automatic and High Power in one click. Stop charging at any percentage you choose. See, live, how many watts are coming from the charger and the battery, and where they go.</p>
+      <div class="actions">
+        <a class="btn" href="/Juice.dmg" download>Download for Mac</a>
+        <span class="meta">Version 1.2 · macOS 14 or later · Apple silicon</span>
+      </div>
+      <figure class="bar">
+        <img src="/icons.png" alt="Every state of the Juice menu bar icon, in light and dark: on battery, charging, held at the limit, High Power and Low Power." width="1440" height="780" loading="lazy">
+        <figcaption class="label">One icon replaces the system battery. Colour is the mode, the glyph is what it's doing.</figcaption>
+      </figure>
+    </div>
+    <figure class="shot">
+      <img src="/panel.png" alt="The Juice panel: battery level, power mode tiles, charge limit slider, live energy flow chart, and apps using significant energy." width="744" height="2070">
+      <figcaption class="label">The whole app is this one panel</figcaption>
+    </figure>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <p class="label">What it does</p>
+      <h2>Six things, one click away.</h2>
+      <div class="grid">
+        <div class="card"><h3>Power modes</h3><p>Low Power, Automatic and High Power as three buttons. No trip to System Settings. It can also drop to Low Power by itself below 20% and switch back when you plug in.</p></div>
+        <div class="card"><h3>Charge limit</h3><p>Pick any percentage from 40 to 100, one percent at a time. Charging stops there and starts again 3% lower. Need a full battery for a trip? Charge to full once, then it goes back.</p></div>
+        <div class="card"><h3>Live energy flow</h3><p>A chart of watts in and watts out, refreshed every second from the Mac's own power sensors: charger and battery on the left; CPU, GPU, memory, display and charging on the right.</p></div>
+        <div class="card"><h3>Look one level deeper</h3><p>Click CPU or Memory to see which apps the power is going to. Click Display &amp; other to see the chip rails that have their own sensor.</p></div>
+        <div class="card"><h3>Activity Monitor, shorter</h3><p>The apps using the most energy, memory and CPU, with per-core load and the memory breakdown. Hover a row to quit the app; hold Option to force quit.</p></div>
+        <div class="card"><h3>Battery facts</h3><p>Health, cycle count, temperature, time remaining, and how fast it is charging or draining right now.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <figure class="shot">
+        <img src="/drilldown.png" alt="The energy flow chart drilled into CPU, showing an estimate of watts per app." width="744" height="480" loading="lazy">
+        <figcaption class="label">CPU power, split by app</figcaption>
+      </figure>
+      <div>
+        <p class="label">Honest numbers</p>
+        <h2>It says which figures are measured and which are worked out.</h2>
+        <dl>
+          <div><dt>Measured</dt><dd>Charger input, battery flow, total system load, CPU, GPU and memory power. Read directly from sensors, once a second, with no smoothing.</dd></div>
+          <div><dt>Worked out</dt><dd>“Display &amp; other” is the system total minus the measured chips. “Conversion loss” is what came in minus what was delivered.</dd></div>
+          <div><dt>Estimated</dt><dd>Per-app watts. The Mac doesn't measure power per app, so CPU power is split by each app's share of CPU time, and the panel labels it as an estimate.</dd></div>
+          <div><dt>Not shown</dt><dd>Per-app GPU power and a screen backlight figure. macOS doesn't report them, so Juice doesn't guess.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="label">Install</p>
+      <h2>Three steps, about a minute.</h2>
+      <ol class="steps">
+        <li><strong>Download and drag Juice to Applications.</strong> Open it from there. The first time, macOS may ask you to confirm: System Settings › Privacy &amp; Security › Open Anyway.</li>
+        <li><strong>Click the battery in your menu bar, then Install Helper.</strong> Changing power modes and stopping charging both need administrator rights, so macOS asks for your password once.</li>
+        <li><strong>Hide the system battery icon.</strong> System Settings › Control Centre › Battery › turn off Show in Menu Bar. Juice shows the same things and more.</li>
+      </ol>
+      <p class="fine">Built and tested on an M4 Pro MacBook Pro running macOS 26. Other Apple silicon MacBooks should work, but haven't been tested; High Power Mode only exists on models that support it. The helper can do two things only: set the power mode and set the charge limit. If you use another charge limiter, such as AlDente, quit it first so the two don't fight. To remove Juice, open the panel while holding Option, choose Uninstall Helper, then quit and delete the app.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Juice is free. No account, no tracking, nothing leaves your Mac.</span>
+    <a href="https://1273.co.uk">Made by 1273</a>
+  </div>
+</footer>
+</body>
+</html>

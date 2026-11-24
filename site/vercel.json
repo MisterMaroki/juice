@@ -1,0 +1,9 @@
+{
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": "public",
+  "framework": null,
+  "headers": [
+    { "source": "/Juice.dmg", "headers": [{ "key": "Content-Type", "value": "application/x-apple-diskimage" }] }
+  ]
+}

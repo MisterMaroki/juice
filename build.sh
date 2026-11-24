@@ -7,7 +7,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 clang -O2 -Wall -o "$APP/Contents/Resources/juice-helper" helper/juice-helper.c -framework IOKit -framework CoreFoundation
-cp helper/install-helper.sh "$APP/Contents/Resources/"
+cp helper/install-helper.sh helper/uninstall-helper.sh "$APP/Contents/Resources/"
 
 clang -O2 -c App/smc.c -o build/smc.o
 swiftc -O -parse-as-library -import-objc-header App/smc.h build/smc.o -target arm64-apple-macos14 -o "$APP/Contents/MacOS/Juice" App/*.swift -lIOReport
@@ -33,7 +33,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleExecutable</key><string>Juice</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.1</string>
+  <key>CFBundleShortVersionString</key><string>1.2</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
@@ -41,7 +41,14 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --force --deep -s - "$APP"
+# SIGN_ID="Developer ID Application: ..." gives a release-signed build; default is ad-hoc.
+SIGN_ID="${SIGN_ID:--}"
+if [ "$SIGN_ID" = "-" ]; then
+  codesign --force --deep -s - "$APP"
+else
+  codesign --force --options runtime --timestamp -s "$SIGN_ID" "$APP/Contents/Resources/juice-helper"
+  codesign --force --options runtime --timestamp -s "$SIGN_ID" "$APP"
+fi
 rm -rf /Applications/Juice.app
 cp -R "$APP" /Applications/
 echo "Built and installed /Applications/Juice.app"
