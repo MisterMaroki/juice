@@ -22,6 +22,8 @@ final class Power: ObservableObject {
     @Published var cycles: Int?
     @Published var health: Int?
     @Published var apps: [AppUse] = []
+    @Published var flowIn: [Double] = []
+    @Published var flowOut: [Double] = []
     @Published var mode = 0            // 0 auto, 1 low, 2 high
     @Published var limit = 100
     @Published var helperInstalled = FileManager.default.fileExists(atPath: helperPath)
@@ -88,6 +90,7 @@ final class Power: ObservableObject {
             adapterW = 0
             systemW = sensorSystem > 0 ? sensorSystem : discharge
         }
+        updateFlows()
     }
 
     func readMode() {
@@ -183,29 +186,29 @@ final class Power: ObservableObject {
         StatusIcon.make(percent: percent, charging: charging, pluggedIn: onAC, mode: mode)
     }
 
-    // Sankey inputs
-    var flowSources: [Node] { [Node(name: "Charger", color: .mint), Node(name: "Battery", color: .orange)] }
-    var flowSinks: [Node] {
-        [Node(name: "CPU", color: .blue), Node(name: "GPU", color: .purple), Node(name: "Memory", color: .teal),
-         Node(name: "Display & other", color: .indigo), Node(name: "Battery", color: .green), Node(name: "Charger loss", color: .gray)]
-    }
-    var flows: [Flow] {
+    // Sankey inputs. Outputs are derived from inputs so both sides always add up to the same total,
+    // and values are smoothed so the chart doesn't twitch every refresh.
+    static let sourceNodes = [Node(name: "Charger", color: .mint), Node(name: "Battery", color: .orange)]
+    static let sinkNodes = [Node(name: "CPU", color: .blue), Node(name: "GPU", color: .purple), Node(name: "Memory", color: .teal),
+                            Node(name: "Display & other", color: .indigo), Node(name: "Battery", color: .green)]
+
+    func updateFlows() {
         let charge = max(batteryW, 0), discharge = max(-batteryW, 0)
-        let fromAdapter = onAC ? max(systemW - discharge, 0) : 0
-        let total = fromAdapter + discharge
-        guard total > 0.05 else { return [Flow(from: 0, to: 4, watts: charge), Flow(from: 0, to: 5, watts: lossW)] }
+        let adapter = onAC ? max(adapterW, 0) : 0
+        let total = adapter + discharge
+        let toBattery = min(charge, total)
+        let system = max(total - toBattery, 0)
         var comp = [parts.cpu, parts.gpu, parts.memory]
         let sum = comp.reduce(0, +)
-        if sum > total { comp = comp.map { $0 * total / sum } }
-        comp.append(max(total - comp.reduce(0, +), 0))
-        var out: [Flow] = []
-        for (i, w) in comp.enumerated() {
-            out.append(Flow(from: 0, to: i, watts: fromAdapter * w / total))
-            out.append(Flow(from: 1, to: i, watts: discharge * w / total))
+        if sum > system, sum > 0 { comp = comp.map { $0 * system / sum } }
+        let rawIn = [adapter, discharge]
+        let rawOut = comp + [max(system - comp.reduce(0, +), 0), toBattery]
+        func smooth(_ old: [Double], _ new: [Double]) -> [Double] {
+            guard old.count == new.count, old.contains(where: { $0 > 0 }) else { return new }
+            return zip(old, new).map { o, n in (n < 0.05 || o < 0.05) ? n : o + (n - o) * 0.4 }
         }
-        out.append(Flow(from: 0, to: 4, watts: charge))
-        out.append(Flow(from: 0, to: 5, watts: lossW))
-        return out
+        flowIn = smooth(flowIn, rawIn)
+        flowOut = smooth(flowOut, rawOut)
     }
 }
 
@@ -229,68 +232,86 @@ func modeColor(_ mode: Int) -> Color { mode == 1 ? .yellow : (mode == 2 ? .orang
 
 // MARK: - Sankey
 
-struct Flow { let from: Int; let to: Int; let watts: Double }
 struct Node { let name: String; let color: Color }
 
+/// Two-stage flow: sources merge into one trunk, the trunk splits into outputs.
+/// Heights are strictly proportional to watts; labels sit in fixed columns either side.
 struct Sankey: View {
-    let sources: [Node]
-    let sinks: [Node]
-    let flows: [Flow]
+    let sources: [(node: Node, watts: Double)]
+    let sinks: [(node: Node, watts: Double)]
 
     var body: some View {
         Canvas { ctx, size in
-            let barW: CGFloat = 5, gap: CGFloat = 5, minH: CGFloat = 13
-            let total = flows.reduce(0) { $0 + $1.watts }
-            guard total > 0.05 else {
+            let ins = sources.filter { $0.watts > 0.05 }, outs = sinks.filter { $0.watts > 0.05 }
+            let totalIn = ins.reduce(0) { $0 + $1.watts }, totalOut = outs.reduce(0) { $0 + $1.watts }
+            guard totalIn > 0.05, totalOut > 0.05 else {
                 ctx.draw(Text("No power flowing").font(.caption).foregroundStyle(.secondary), at: CGPoint(x: size.width / 2, y: size.height / 2))
                 return
             }
-            func totals(_ count: Int, _ key: (Flow) -> Int) -> [Double] {
-                (0..<count).map { i in flows.filter { key($0) == i }.reduce(0) { $0 + $1.watts } }
-            }
-            let srcT = totals(sources.count, { $0.from }), snkT = totals(sinks.count, { $0.to })
-            // Every visible node gets a minimum height (so its label fits) plus its proportional share.
-            func layout(_ t: [Double], x: CGFloat) -> [CGRect] {
-                let n = CGFloat(t.filter { $0 > 0.05 }.count)
-                let scale = max(size.height - gap * max(n - 1, 0) - minH * n, 0) / total
-                var y: CGFloat = 0
-                return t.map { w in
-                    guard w > 0.05 else { return .zero }
-                    let h = minH + CGFloat(w) * scale
-                    defer { y += h + gap }
-                    return CGRect(x: x, y: y, width: barW, height: h)
-                }
-            }
-            let srcR = layout(srcT, x: 0), snkR = layout(snkT, x: size.width - barW)
-            var srcOff = srcR.map { $0.minY }, snkOff = snkR.map { $0.minY }
+            let leftGutter: CGFloat = 52, rightGutter: CGFloat = 118, barW: CGFloat = 4, gap: CGFloat = 5
+            let trunkH = size.height - gap * CGFloat(max(ins.count, outs.count) - 1)
+            let trunkTop = (size.height - trunkH) / 2
+            let xL = leftGutter, xR = size.width - rightGutter - barW, xT = ((xL + xR) / 2).rounded()
 
-            for f in flows where f.watts > 0.02 && srcT[f.from] > 0.05 && snkT[f.to] > 0.05 {
-                let h0 = srcR[f.from].height * CGFloat(f.watts / srcT[f.from])
-                let h1 = snkR[f.to].height * CGFloat(f.watts / snkT[f.to])
-                let x0 = barW + 1, x1 = size.width - barW - 1, mid = (x0 + x1) / 2
-                let a = srcOff[f.from], b = snkOff[f.to]
+            func column(_ items: [(node: Node, watts: Double)], total: Double, x: CGFloat) -> [CGRect] {
+                let hs = items.map { max(CGFloat($0.watts / total) * trunkH, 1.5) }
+                var y = (size.height - hs.reduce(0, +) - gap * CGFloat(items.count - 1)) / 2
+                return hs.map { h in defer { y += h + gap }; return CGRect(x: x, y: y, width: barW, height: h) }
+            }
+            let inR = column(ins, total: totalIn, x: xL), outR = column(outs, total: totalOut, x: xR)
+
+            func band(x0: CGFloat, y0: CGFloat, h0: CGFloat, x1: CGFloat, y1: CGFloat, h1: CGFloat, color: Color, nodeOnLeft: Bool) {
+                let mid = (x0 + x1) / 2
                 var p = Path()
-                p.move(to: CGPoint(x: x0, y: a))
-                p.addCurve(to: CGPoint(x: x1, y: b), control1: CGPoint(x: mid, y: a), control2: CGPoint(x: mid, y: b))
-                p.addLine(to: CGPoint(x: x1, y: b + h1))
-                p.addCurve(to: CGPoint(x: x0, y: a + h0), control1: CGPoint(x: mid, y: b + h1), control2: CGPoint(x: mid, y: a + h0))
+                p.move(to: CGPoint(x: x0, y: y0))
+                p.addCurve(to: CGPoint(x: x1, y: y1), control1: CGPoint(x: mid, y: y0), control2: CGPoint(x: mid, y: y1))
+                p.addLine(to: CGPoint(x: x1, y: y1 + h1))
+                p.addCurve(to: CGPoint(x: x0, y: y0 + h0), control1: CGPoint(x: mid, y: y1 + h1), control2: CGPoint(x: mid, y: y0 + h0))
                 p.closeSubpath()
-                ctx.fill(p, with: .linearGradient(
-                    Gradient(colors: [sources[f.from].color.opacity(0.5), sinks[f.to].color.opacity(0.5)]),
-                    startPoint: CGPoint(x: x0, y: 0), endPoint: CGPoint(x: x1, y: 0)))
-                srcOff[f.from] += h0; snkOff[f.to] += h1
+                // Strong at the node, fading towards the trunk.
+                let strong = color.opacity(0.6), soft = color.opacity(0.28)
+                ctx.fill(p, with: .linearGradient(Gradient(colors: nodeOnLeft ? [strong, soft] : [soft, strong]),
+                                                  startPoint: CGPoint(x: x0, y: 0), endPoint: CGPoint(x: x1, y: 0)))
             }
 
-            func label(_ n: Node, _ w: Double, _ r: CGRect, leading: Bool) {
-                guard w > 0.05 else { return }
-                ctx.fill(Path(roundedRect: r, cornerRadius: 2.5), with: .color(n.color))
-                let watts = Text(String(format: w < 10 ? "%.1f W" : "%.0f W", w)).font(.system(size: 10, weight: .bold).monospacedDigit())
-                let name = Text(n.name).font(.system(size: 10, weight: .medium))
-                let t = (leading ? Text("\(name)  \(watts)") : Text("\(watts)  \(name)")).foregroundStyle(.primary)
-                ctx.draw(t, at: CGPoint(x: leading ? r.maxX + 6 : r.minX - 6, y: r.midY), anchor: leading ? .leading : .trailing)
+            var y = trunkTop
+            for (i, item) in ins.enumerated() {
+                let h = CGFloat(item.watts / totalIn) * trunkH
+                band(x0: xL + barW, y0: inR[i].minY, h0: inR[i].height, x1: xT, y1: y, h1: h, color: item.node.color, nodeOnLeft: true)
+                y += h
             }
-            for i in sources.indices { label(sources[i], srcT[i], srcR[i], leading: true) }
-            for i in sinks.indices { label(sinks[i], snkT[i], snkR[i], leading: false) }
+            y = trunkTop
+            for (i, item) in outs.enumerated() {
+                let h = CGFloat(item.watts / totalOut) * trunkH
+                band(x0: xT + barW, y0: y, h0: h, x1: xR, y1: outR[i].minY, h1: outR[i].height, color: item.node.color, nodeOnLeft: false)
+                y += h
+            }
+
+            ctx.fill(Path(roundedRect: CGRect(x: xT, y: trunkTop, width: barW, height: trunkH), cornerRadius: 2), with: .color(.primary.opacity(0.55)))
+            for (i, item) in ins.enumerated() { ctx.fill(Path(roundedRect: inR[i], cornerRadius: 2), with: .color(item.node.color)) }
+            for (i, item) in outs.enumerated() { ctx.fill(Path(roundedRect: outR[i], cornerRadius: 2), with: .color(item.node.color)) }
+
+            // Labels: keep each next to its bar, but never closer together than one line.
+            func spread(_ ys: [CGFloat], minGap: CGFloat) -> [CGFloat] {
+                var v = ys
+                let lo = minGap / 2, hi = size.height - minGap / 2
+                for i in v.indices { v[i] = max(v[i], i == 0 ? lo : v[i - 1] + minGap) }
+                for i in v.indices.reversed() { v[i] = min(v[i], i == v.count - 1 ? hi : v[i + 1] - minGap) }
+                return v
+            }
+            func watts(_ w: Double) -> String { String(format: w < 9.95 ? "%.1f W" : "%.0f W", w) }
+            let nameFont = Font.system(size: 10.5, weight: .medium), wattFont = Font.system(size: 10.5, weight: .bold).monospacedDigit()
+
+            let inY = spread(inR.map { $0.midY }, minGap: 28)
+            for (i, item) in ins.enumerated() {
+                ctx.draw(Text(item.node.name).font(nameFont).foregroundStyle(.secondary), at: CGPoint(x: xL - 7, y: inY[i] - 6.5), anchor: .trailing)
+                ctx.draw(Text(watts(item.watts)).font(wattFont).foregroundStyle(.primary), at: CGPoint(x: xL - 7, y: inY[i] + 6.5), anchor: .trailing)
+            }
+            let outY = spread(outR.map { $0.midY }, minGap: 14)
+            for (i, item) in outs.enumerated() {
+                ctx.draw(Text(item.node.name).font(nameFont).foregroundStyle(.secondary), at: CGPoint(x: xR + barW + 7, y: outY[i]), anchor: .leading)
+                ctx.draw(Text(watts(item.watts)).font(wattFont).foregroundStyle(.primary), at: CGPoint(x: size.width, y: outY[i]), anchor: .trailing)
+            }
         }
     }
 }
@@ -387,7 +408,7 @@ struct PanelView: View {
             footer
         }
         .padding(12)
-        .frame(width: 348)
+        .frame(width: 360)
         .onAppear { p.panelOpened(); syncSlider() }
         .onDisappear { p.panelClosed() }
         .onChange(of: p.limit) { if !editing { syncSlider() } }
@@ -478,10 +499,11 @@ struct PanelView: View {
                 HStack {
                     CardTitle(symbol: "arrow.triangle.branch", title: "Energy flow")
                     Spacer()
-                    Text(String(format: "%.1f W", p.onAC ? p.adapterW : p.systemW))
+                    Text(String(format: "%.1f W", p.flowIn.reduce(0, +)))
                         .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
                 }
-                Sankey(sources: p.flowSources, sinks: p.flowSinks, flows: p.flows)
+                Sankey(sources: Array(zip(Power.sourceNodes, p.flowIn)).map { (node: $0.0, watts: $0.1) },
+                       sinks: Array(zip(Power.sinkNodes, p.flowOut)).map { (node: $0.0, watts: $0.1) })
                     .frame(height: 150)
             }
         }
