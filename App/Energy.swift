@@ -12,7 +12,11 @@ import Darwin
 @_silgen_name("IOReportChannelGetUnitLabel") private func IOReportChannelGetUnitLabel(_ c: CFDictionary) -> Unmanaged<CFString>?
 @_silgen_name("IOReportSimpleGetIntegerValue") private func IOReportSimpleGetIntegerValue(_ c: CFDictionary, _ a: Int32) -> Int64
 
-struct ComponentPower { var cpu = 0.0, gpu = 0.0, memory = 0.0 }
+struct ComponentPower {
+    var cpu = 0.0, gpu = 0.0, memory = 0.0
+    // Smaller rails that live inside "Display & other".
+    var displayController = 0.0, memoryController = 0.0, neuralEngine = 0.0, mediaEngines = 0.0
+}
 
 final class EnergySampler {
     private var channels: CFMutableDictionary?
@@ -52,28 +56,43 @@ final class EnergySampler {
             case "CPU Energy": p.cpu += watts
             case "GPU Energy": p.gpu += watts
             case "DRAM": p.memory += watts
-            default: break
+            case "DISP", "DISPEXT": p.displayController += watts
+            case "AMCC", "DCS": p.memoryController += watts
+            case "ISP", "AVE", "MSR": p.mediaEngines += watts
+            default: if name.hasPrefix("ANE") { p.neuralEngine += watts }
             }
         }
         return p
     }
 }
 
-// MARK: - Apps using significant energy (same "energy impact" figure Activity Monitor shows)
+// MARK: - Per-app CPU, memory and energy impact (the same figures Activity Monitor shows)
 
 struct AppUse: Identifiable {
-    let id: String
+    let id: String          // bundle or executable path
     let name: String
     let icon: NSImage
-    let impact: Double
+    var impact = 0.0        // energy impact
+    var cpu = 0.0           // percent of one core
+    var memory = 0.0        // bytes
+    var pids: [pid_t] = []
+    let isApp: Bool
+    var canQuit = false
 }
 
 enum AppEnergy {
+    private static func bytes(_ s: Substring) -> Double {
+        var t = s
+        while let l = t.last, l == "+" || l == "-" { t = t.dropLast() }
+        guard let unit = t.last, let v = Double(t.dropLast()) else { return Double(t) ?? 0 }
+        switch unit { case "K": return v * 1024; case "M": return v * 1_048_576; case "G": return v * 1_073_741_824; case "B": return v; default: return 0 }
+    }
+
     /// Blocks for about a second. Call off the main thread.
-    static func sample(limit: Int = 4) -> [AppUse] {
+    static func sample() -> [AppUse] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/top")
-        p.arguments = ["-l", "2", "-s", "1", "-o", "power", "-stats", "pid,power", "-n", "40"]
+        p.arguments = ["-l", "2", "-s", "1", "-stats", "pid,cpu,mem,power"]
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = Pipe()
@@ -86,25 +105,55 @@ enum AppEnergy {
         let lines = out.components(separatedBy: "\n")
         guard let header = lines.lastIndex(where: { $0.hasPrefix("PID") }) else { return [] }
         let me = ProcessInfo.processInfo.processIdentifier
+        let system = ["/System/", "/usr/", "/sbin/", "/bin/", "/Library/Apple/"]
 
-        var totals: [String: (name: String, path: String, impact: Double)] = [:]
+        var totals: [String: AppUse] = [:]
         for line in lines[(header + 1)...] {
             let f = line.split(separator: " ")
-            guard f.count >= 2, let pid = Int32(f[0]), let power = Double(f[1]), power > 0, pid != me, pid != p.processIdentifier else { continue }
+            guard f.count >= 4, let pid = Int32(f[0]), let cpu = Double(f[1]), let power = Double(f[3]),
+                  pid != me, pid != p.processIdentifier else { continue }
             var buf = [CChar](repeating: 0, count: 4096)
             guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { continue }
             let path = String(cString: buf)
             // Roll helpers up into the app that owns them.
-            var key = path, name = (path as NSString).lastPathComponent
+            var key = path, name = (path as NSString).lastPathComponent, isApp = false
             if let r = path.range(of: ".app/") {
                 key = String(path[..<r.lowerBound]) + ".app"
                 name = ((key as NSString).lastPathComponent as NSString).deletingPathExtension
+                isApp = true
             }
             if name == "top" || name == "Juice" { continue }
-            totals[key, default: (name, key, 0)].impact += power
+            var e = totals[key] ?? AppUse(id: key, name: name, icon: NSImage(), isApp: isApp)
+            e.impact += power; e.cpu += cpu; e.memory += bytes(f[2]); e.pids.append(pid)
+            totals[key] = e
         }
-        return totals.values.filter { $0.impact >= 1 }.sorted { $0.impact > $1.impact }.prefix(limit).map {
-            AppUse(id: $0.path, name: $0.name, icon: NSWorkspace.shared.icon(forFile: $0.path), impact: $0.impact)
+        // Keep anything that matters on any of the three measures; icons only for those.
+        let all = Array(totals.values)
+        var keep = Set<String>()
+        for sorted in [all.sorted { $0.impact > $1.impact }, all.sorted { $0.cpu > $1.cpu }, all.sorted { $0.memory > $1.memory }] {
+            sorted.prefix(8).forEach { keep.insert($0.id) }
         }
+        return all.filter { keep.contains($0.id) }.map { e in
+            // Only offer Quit for the user's own, non-system processes.
+            let mine = e.pids.allSatisfy { kill($0, 0) == 0 }
+            var out = AppUse(id: e.id, name: e.name, icon: NSWorkspace.shared.icon(forFile: e.id), isApp: e.isApp)
+            out.impact = e.impact; out.cpu = e.cpu; out.memory = e.memory; out.pids = e.pids
+            out.canQuit = mine && !system.contains { e.id.hasPrefix($0) }
+            return out
+        }
+    }
+
+    /// Quit: apps get a normal quit (so they can ask about unsaved work), bare processes get SIGTERM.
+    /// Force quit: killed immediately.
+    static func quit(_ app: AppUse, force: Bool) {
+        if app.isApp {
+            let running = NSWorkspace.shared.runningApplications.filter { $0.bundleURL?.path == app.id }
+            if !running.isEmpty {
+                running.forEach { _ = force ? $0.forceTerminate() : $0.terminate() }
+                if force { app.pids.forEach { kill($0, SIGKILL) } }
+                return
+            }
+        }
+        app.pids.forEach { kill($0, force ? SIGKILL : SIGTERM) }
     }
 }

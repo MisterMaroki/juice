@@ -118,3 +118,31 @@ extension StatusIcon {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
 }
+
+extension StatusIcon {
+    /// Build step: draws the 1024px app icon (orange-juice gradient, white bolt).
+    static func renderAppIcon(to path: String) {
+        let px = 1024
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = NSSize(width: px, height: px)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
+        let shape = NSBezierPath(roundedRect: tile, xRadius: 185, yRadius: 185)
+        NSGraphicsContext.current?.saveGraphicsState()
+        let shadow = NSShadow(); shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
+        shadow.shadowBlurRadius = 24; shadow.shadowOffset = NSSize(width: 0, height: -10); shadow.set()
+        NSColor.orange.setFill(); shape.fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+        NSGradient(colors: [NSColor(red: 1.0, green: 0.80, blue: 0.22, alpha: 1), NSColor(red: 1.0, green: 0.48, blue: 0.10, alpha: 1)])!
+            .draw(in: shape, angle: -90)
+        if let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 430, weight: .bold)) {
+            let white = tinted(bolt, .white)
+            white.draw(at: NSPoint(x: tile.midX - white.size.width / 2, y: tile.midY - white.size.height / 2), from: .zero, operation: .sourceOver, fraction: 1)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}

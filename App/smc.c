@@ -17,7 +17,7 @@ static int call(SMCKeyData *in, SMCKeyData *out) {
     return (IOConnectCallStructMethod(conn, 2, in, sizeof(SMCKeyData), out, &n) == KERN_SUCCESS && out->result == 0) ? 0 : -1;
 }
 
-double juice_smc_float(const char *k) {
+static int read_key(const char *k, unsigned char *buf, UInt32 want) {
     if (!conn) {
         io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
         if (!svc) return -1;
@@ -25,16 +25,27 @@ double juice_smc_float(const char *k) {
         IOObjectRelease(svc);
         if (kr != KERN_SUCCESS) { conn = 0; return -1; }
     }
+    UInt32 key = ((UInt32)k[0] << 24) | ((UInt32)k[1] << 16) | ((UInt32)k[2] << 8) | (UInt32)k[3];
     SMCKeyData in = {0}, out = {0};
-    in.key = ((UInt32)k[0] << 24) | ((UInt32)k[1] << 16) | ((UInt32)k[2] << 8) | (UInt32)k[3];
-    in.data8 = 9;                                   // key info
-    if (call(&in, &out) || out.keyInfo.dataSize != 4) return -1;
-    memset(&in, 0, sizeof in); 
-    in.key = ((UInt32)k[0] << 24) | ((UInt32)k[1] << 16) | ((UInt32)k[2] << 8) | (UInt32)k[3];
-    in.keyInfo.dataSize = 4;
-    in.data8 = 5;                                   // read bytes
-    memset(&out, 0, sizeof out);
+    in.key = key; in.data8 = 9;                     // key info
+    if (call(&in, &out) || out.keyInfo.dataSize != want) return -1;
+    memset(&in, 0, sizeof in); memset(&out, 0, sizeof out);
+    in.key = key; in.keyInfo.dataSize = want; in.data8 = 5;   // read bytes
     if (call(&in, &out)) return -1;
-    float f; memcpy(&f, out.bytes, 4);
+    memcpy(buf, out.bytes, want);
+    return 0;
+}
+
+double juice_smc_float(const char *k) {
+    unsigned char b[4]; float f;
+    if (read_key(k, b, 4)) return -1e9;
+    memcpy(&f, b, 4);
     return (double)f;
+}
+
+double juice_smc_si16(const char *k) {
+    unsigned char b[2]; SInt16 v;
+    if (read_key(k, b, 2)) return -1e9;
+    memcpy(&v, b, 2);
+    return (double)v;
 }
