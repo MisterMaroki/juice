@@ -9,7 +9,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 clang -O2 -Wall -o "$APP/Contents/Resources/juice-helper" helper/juice-helper.c -framework IOKit -framework CoreFoundation
 cp helper/install-helper.sh "$APP/Contents/Resources/"
 
-swiftc -O -parse-as-library -target arm64-apple-macos14 -o "$APP/Contents/MacOS/Juice" App/*.swift
+clang -O2 -c App/smc.c -o build/smc.o
+swiftc -O -parse-as-library -import-objc-header App/smc.h build/smc.o -target arm64-apple-macos14 -o "$APP/Contents/MacOS/Juice" App/*.swift -lIOReport
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
