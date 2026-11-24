@@ -134,19 +134,8 @@ final class Power: ObservableObject {
         return "Plugged in · not charging"
     }
 
-    var menuIcon: String {
-        switch mode {
-        case 2: return "bolt.fill"
-        case 1: return "leaf.fill"
-        default:
-            switch percent {
-            case ..<13: return "battery.0percent"
-            case ..<38: return "battery.25percent"
-            case ..<63: return "battery.50percent"
-            case ..<88: return "battery.75percent"
-            default: return "battery.100percent"
-            }
-        }
+    var statusImage: NSImage {
+        StatusIcon.make(percent: percent, charging: charging, pluggedIn: onAC, mode: mode)
     }
 }
 
@@ -334,6 +323,9 @@ struct JuiceApp: App {
     init() {
         // Debug: `Juice --snapshot out.png` renders the panel to an image and exits.
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--icons"), i + 1 < args.count {
+            StatusIcon.renderPreview(to: args[i + 1]); exit(0)
+        }
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let p = Power()
             let r = ImageRenderer(content: PanelView(p: p).background(Color(nsColor: .windowBackgroundColor)))
@@ -350,7 +342,7 @@ struct JuiceApp: App {
         MenuBarExtra {
             PanelView(p: power)
         } label: {
-            Image(systemName: power.menuIcon)
+            Image(nsImage: power.statusImage)
         }
         .menuBarExtraStyle(.window)
     }
