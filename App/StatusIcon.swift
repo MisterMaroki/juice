@@ -123,7 +123,8 @@ extension StatusIcon {
 }
 
 extension StatusIcon {
-    /// Build step: draws the 1024px app icon (orange-juice gradient, white bolt).
+    /// Build step: draws the 1024px app icon. The mark is a citrus slice read as a gauge:
+    /// eight segments, six full and two left pale, the way a battery sits at its charge limit.
     static func renderAppIcon(to path: String) {
         let px = 1024
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8, samplesPerPixel: 4,
@@ -138,12 +139,29 @@ extension StatusIcon {
         shadow.shadowBlurRadius = 24; shadow.shadowOffset = NSSize(width: 0, height: -10); shadow.set()
         NSColor.orange.setFill(); shape.fill()
         NSGraphicsContext.current?.restoreGraphicsState()
-        NSGradient(colors: [NSColor(red: 1.0, green: 0.80, blue: 0.22, alpha: 1), NSColor(red: 1.0, green: 0.48, blue: 0.10, alpha: 1)])!
+        NSGradient(colors: [NSColor(red: 1.0, green: 0.62, blue: 0.10, alpha: 1), NSColor(red: 1.0, green: 0.36, blue: 0.02, alpha: 1)])!
             .draw(in: shape, angle: -90)
-        if let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 430, weight: .bold)) {
-            let white = tinted(bolt, .white)
-            white.draw(at: NSPoint(x: tile.midX - white.size.width / 2, y: tile.midY - white.size.height / 2), from: .zero, operation: .sourceOver, fraction: 1)
+
+        let c = NSPoint(x: tile.midX, y: tile.midY)
+        let cream = NSColor(red: 1.0, green: 0.97, blue: 0.89, alpha: 1)
+        // Rind
+        let rind = NSBezierPath(ovalIn: NSRect(x: c.x - 292, y: c.y - 292, width: 584, height: 584))
+        rind.lineWidth = 40
+        cream.setStroke(); rind.stroke()
+        // Segments, clockwise from 12 o'clock
+        for i in 0..<8 {
+            let mid = 90 - 22.5 - 45 * CGFloat(i), half: CGFloat = 16.5
+            let wedge = NSBezierPath()
+            wedge.appendArc(withCenter: c, radius: 78, startAngle: mid + half - 5, endAngle: mid - half + 5, clockwise: true)
+            wedge.appendArc(withCenter: c, radius: 216, startAngle: mid - half, endAngle: mid + half, clockwise: false)
+            wedge.close()
+            wedge.lineJoinStyle = .round
+            wedge.lineWidth = 26
+            // Fill and stroke on a transparency layer so the pale segments don't double up where they overlap.
+            let ctx = NSGraphicsContext.current!.cgContext
+            ctx.saveGState(); ctx.setAlpha(i < 6 ? 1 : 0.32); ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            cream.setFill(); cream.setStroke(); wedge.fill(); wedge.stroke()
+            ctx.endTransparencyLayer(); ctx.restoreGState()
         }
         NSGraphicsContext.restoreGraphicsState()
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
