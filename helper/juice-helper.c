@@ -162,6 +162,8 @@ static void logmsg(const char *fmt, int a, int b, int c) {
     fprintf(stderr, "%s ", ts); fprintf(stderr, fmt, a, b, c); fputc('\n', stderr);
 }
 
+static volatile int asleep;   // between WillSleep and HasPoweredOn: the timer must not undo the sleep decision
+
 // Decide and apply. Stateless: current SMC state is the hysteresis memory.
 static void evaluate(void) {
     int on_ac, pct = battery_percent(&on_ac);
@@ -184,6 +186,40 @@ static void evaluate(void) {
 // ---------- daemon ----------
 static io_connect_t root_port;
 
+static CFDateRef wake_at;   // our scheduled re-check wake, if any
+
+static void cancel_wake(void) {
+    if (!wake_at) return;
+    IOPMCancelScheduledPowerEvent(wake_at, CFSTR("com.omar.juice.helper"), CFSTR(kIOPMAutoWake));
+    CFRelease(wake_at); wake_at = NULL;
+}
+
+// Going to sleep: the timer can't run, so decide now how the battery should behave until we're back.
+static void prepare_for_sleep(void) {
+    int limit = read_limit();
+    if (limit >= 100) return;
+    int on_ac, pct = battery_percent(&on_ac);
+    if (pct < 0) return;
+    if (pct >= limit - RESUME_GAP) {
+        set_charging_inhibited(1);              // at or near the limit: hold it there all night
+    } else if (on_ac) {
+        set_charging_inhibited(0);              // keep charging, and wake up to stop it at the limit
+        int mins = limit - pct;                 // fast charging adds about 1% a minute, never faster
+        if (mins < 3) mins = 3;
+        if (mins > 30) mins = 30;
+        cancel_wake();
+        wake_at = CFDateCreate(NULL, CFAbsoluteTimeGetCurrent() + mins * 60);
+        if (IOPMSchedulePowerEvent(wake_at, CFSTR("com.omar.juice.helper"), CFSTR(kIOPMAutoWake)) != kIOReturnSuccess)
+            logmsg("couldn't schedule a wake (pct %d, limit %d)%.0d", pct, limit, 0);
+        else
+            logmsg("sleeping at %d%%, charging on, re-check in %d min", pct, mins, 0);
+    } else if (pct >= 50) {
+        set_charging_inhibited(1);              // on battery with plenty left: if it's plugged in asleep, stay put
+    } else {
+        set_charging_inhibited(0);              // low or flat: if it's plugged in asleep, let it charge
+    }
+}
+
 static void power_cb(void *ref, io_service_t svc, natural_t msg, void *arg) {
     (void)ref; (void)svc;
     switch (msg) {
@@ -191,17 +227,22 @@ static void power_cb(void *ref, io_service_t svc, natural_t msg, void *arg) {
             IOAllowPowerChange(root_port, (long)arg);
             break;
         case kIOMessageSystemWillSleep:
-            // Don't let it charge past the limit while asleep: pause charging for the night.
-            if (read_limit() < 100) set_charging_inhibited(1);
+            asleep = 1;
+            prepare_for_sleep();
             IOAllowPowerChange(root_port, (long)arg);
             break;
+        case kIOMessageSystemWillNotSleep:
+            asleep = 0;
+            break;
         case kIOMessageSystemHasPoweredOn:
+            asleep = 0;
+            cancel_wake();
             evaluate();
             break;
     }
 }
 
-static void timer_cb(CFRunLoopTimerRef t, void *info) { (void)t; (void)info; evaluate(); }
+static void timer_cb(CFRunLoopTimerRef t, void *info) { (void)t; (void)info; if (!asleep) evaluate(); }
 
 static void on_term(void) {
     set_charging_inhibited(0);  // never leave the Mac unable to charge
